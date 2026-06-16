@@ -11,6 +11,52 @@ interface BookContent {
 	format: 'txt' | 'epub';
 	totalWords: number;
 	processedContent: string[];
+	chapters?: ChapterInfo[];
+}
+
+interface ChapterInfo {
+	id?: string;
+	label: string;
+	position: number;
+	level?: number;
+}
+
+interface ChapterDraft {
+	id?: string;
+	label: string;
+	sourceOffset: number;
+	level?: number;
+}
+
+interface EpubFlowChapter {
+	id: string;
+	href?: string;
+	title?: string;
+	level?: number;
+}
+
+interface EpubTocItem {
+	id?: string;
+	href?: string;
+	title?: string;
+	label?: string;
+	text?: string;
+	level?: number;
+	children?: EpubTocItem[];
+	subitems?: EpubTocItem[];
+}
+
+interface EpubDocument {
+	flow?: EpubFlowChapter[];
+	toc?: EpubTocItem[];
+	on(event: 'end', callback: () => void): void;
+	on(event: 'error', callback: (error: Error) => void): void;
+	parse(): void;
+	getChapter(id: string, callback: (error: Error | null, text: string) => void): void;
+}
+
+interface ChapterQuickPickItem extends vscode.QuickPickItem {
+	chapter: ChapterInfo;
 }
 
 interface ReadingProgress {
@@ -27,12 +73,7 @@ interface DailyStats {
 
 let statusBarItem: vscode.StatusBarItem;
 let currentPosition = 0;
-let content: BookContent = { 
-	content: [], 
-	format: 'txt',
-	totalWords: 0,
-	processedContent: []
-};
+let content: BookContent = createEmptyContent();
 let currentBook: string = '';
 let isReaderVisible = true;
 
@@ -120,19 +161,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
 		if (selected) {
 			// 先清空当前内容
-			content = { 
-				content: [], 
-				format: 'txt',
-				totalWords: 0,
-				processedContent: []
-			};
+			content = createEmptyContent();
 			currentPosition = 0;
-			
+
 			// 更新当前书籍并加载内容
 			currentBook = selected;
 			await vscode.workspace.getConfiguration('zloveread').update('currentBook', selected, true);
 			await loadBookContent(path.join(bookPath, selected));
-			
+
 			// 通知用户
 			vscode.window.showInformationMessage(`已切换到《${selected}》`);
 		}
@@ -176,6 +212,10 @@ export async function activate(context: vscode.ExtensionContext) {
 			updateStatusBar();
 			saveProgress();
 		}
+	});
+
+	let showToc = vscode.commands.registerCommand('zloveread.showToc', async () => {
+		await showTableOfContents();
 	});
 
 	// 切换阅读视图
@@ -223,6 +263,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(loadBook);
 	context.subscriptions.push(nextLine);
 	context.subscriptions.push(prevLine);
+	context.subscriptions.push(showToc);
 	context.subscriptions.push(toggleReader);
 	context.subscriptions.push(manageBooks);
 	context.subscriptions.push(reloadContent);
@@ -241,52 +282,67 @@ async function loadBookContent(filePath: string) {
 			totalWords,
 			format: 'txt'
 		};
-		currentPosition = getProgress(currentBook);
+		currentPosition = clampPosition(getProgress(currentBook), content.processedContent.length);
 		updateStatusBar();
 	} else if (ext === '.epub') {
 		try {
-			const epub = new EPub(filePath);
+			const epub = new EPub(filePath) as EpubDocument;
 			content = await new Promise<BookContent>((resolve, reject) => {
+				epub.on('error', reject);
 				epub.on('end', async () => {
-					let allContent: string[] = [];
-					
-					// 使用 Promise.all 等待所有章节加载完成
-					await Promise.all(epub.flow.map((chapter: { id: string }) => {
-						return new Promise<void>((resolveChapter, rejectChapter) => {
-							epub.getChapter(chapter.id, (error: Error, text: string) => {
-								if (error) {
-									rejectChapter(error);
-									return;
-								}
-								const cleanText = text.replace(/<[^>]*>/g, '');
-								allContent = allContent.concat(cleanText.split('\n').filter(line => line.trim()));
-								resolveChapter();
-							});
-						});
-					}));
+					try {
+						const titleLookup = createEpubTitleLookup(epub);
+						const allContent: string[] = [];
+						const chapterDrafts: ChapterDraft[] = [];
+						let sourceOffset = 0;
 
-					const { processedContent, totalWords } = processContent(allContent);
-					resolve({
-						content: allContent,
-						processedContent,
-						totalWords,
-						format: 'epub'
-					});
+						for (const [index, chapter] of (epub.flow || []).entries()) {
+							const text = await getEpubChapter(epub, chapter.id);
+							const cleanLines = cleanEpubText(text);
+
+							if (cleanLines.length === 0) {
+								continue;
+							}
+
+							chapterDrafts.push({
+								id: chapter.id,
+								label: getChapterTitle(chapter, titleLookup, index),
+								sourceOffset,
+								level: chapter.level
+							});
+
+							allContent.push(...cleanLines);
+							sourceOffset += getSourceLength(cleanLines);
+						}
+
+						const { processedContent, totalWords } = processContent(allContent);
+						const chapters = buildChapterPositions(chapterDrafts, processedContent.length);
+						resolve({
+							content: allContent,
+							processedContent,
+							totalWords,
+							format: 'epub',
+							chapters
+						});
+					} catch (error) {
+						reject(error);
+					}
 				});
 				
 				epub.parse();
 			});
-			
-			currentPosition = getProgress(currentBook);
+
+			currentPosition = clampPosition(getProgress(currentBook), content.processedContent.length);
 			updateStatusBar();
-		} catch (error: any) {
-			vscode.window.showErrorMessage(`加载EPUB文件失败: ${error.message}`);
+		} catch (error: unknown) {
+			vscode.window.showErrorMessage(`加载EPUB文件失败: ${getErrorMessage(error)}`);
 		}
 	}
 }
 
 function updateStatusBar() {
 	if (content.processedContent.length > 0) {
+		currentPosition = clampPosition(currentPosition, content.processedContent.length);
 		const showProgress = vscode.workspace.getConfiguration('zloveread').get('showProgress', true);
 		
 		let statusText = '';
@@ -338,6 +394,52 @@ export function deactivate() {
 	}
 }
 
+function createEmptyContent(): BookContent {
+	return {
+		content: [],
+		format: 'txt',
+		totalWords: 0,
+		processedContent: [],
+		chapters: []
+	};
+}
+
+async function showTableOfContents() {
+	if (!currentBook) {
+		vscode.window.showInformationMessage('请先选择一本电子书');
+		return;
+	}
+
+	if (content.format !== 'epub') {
+		vscode.window.showInformationMessage('当前书籍不支持目录跳转');
+		return;
+	}
+
+	const chapters = content.chapters || [];
+	if (chapters.length === 0) {
+		vscode.window.showInformationMessage('未找到章节目录');
+		return;
+	}
+
+	const items: ChapterQuickPickItem[] = chapters.map(chapter => ({
+		label: chapter.label,
+		description: formatChapterProgress(chapter.position, content.processedContent.length),
+		chapter
+	}));
+
+	const selected = await vscode.window.showQuickPick(items, {
+		placeHolder: '选择要跳转的章节'
+	});
+
+	if (!selected) {
+		return;
+	}
+
+	currentPosition = clampPosition(selected.chapter.position, content.processedContent.length);
+	updateStatusBar();
+	await saveProgress();
+}
+
 function processContent(rawContent: string[]): { processedContent: string[], totalWords: number } {
 	const lineLength = vscode.workspace.getConfiguration('zloveread').get('lineLength', 15);
 	let processedContent: string[] = [];
@@ -346,7 +448,9 @@ function processContent(rawContent: string[]): { processedContent: string[], tot
 
 	for (const line of rawContent) {
 		const trimmedLine = line.trim();
-		if (!trimmedLine) continue;
+		if (!trimmedLine) {
+			continue;
+		}
 		
 		totalWords += trimmedLine.length;
 		buffer += trimmedLine;
@@ -364,4 +468,136 @@ function processContent(rawContent: string[]): { processedContent: string[], tot
 	}
 	
 	return { processedContent, totalWords };
+}
+
+function getEpubChapter(epub: EpubDocument, chapterId: string): Promise<string> {
+	return new Promise((resolve, reject) => {
+		epub.getChapter(chapterId, (error: Error | null, text: string) => {
+			if (error) {
+				reject(error);
+				return;
+			}
+
+			resolve(text || '');
+		});
+	});
+}
+
+function cleanEpubText(text: string): string[] {
+	return text
+		.replace(/<br\s*\/?>/gi, '\n')
+		.replace(/<\/p>/gi, '\n')
+		.replace(/<\/h[1-6]>/gi, '\n')
+		.replace(/<[^>]*>/g, '')
+		.split('\n')
+		.map(line => decodeHtmlEntities(line).trim())
+		.filter(line => line.length > 0);
+}
+
+function decodeHtmlEntities(text: string): string {
+	return text
+		.replace(/&nbsp;/g, ' ')
+		.replace(/&amp;/g, '&')
+		.replace(/&lt;/g, '<')
+		.replace(/&gt;/g, '>')
+		.replace(/&quot;/g, '"')
+		.replace(/&#39;/g, "'");
+}
+
+function getErrorMessage(error: unknown): string {
+	if (error instanceof Error) {
+		return error.message;
+	}
+
+	return String(error);
+}
+
+function createEpubTitleLookup(epub: EpubDocument): Map<string, string> {
+	const titleLookup = new Map<string, string>();
+	flattenTocItems(epub.toc || []).forEach(item => {
+		const title = normalizeChapterTitle(item.title || item.label || item.text);
+		if (!title) {
+			return;
+		}
+
+		const keys = getTocKeys(item);
+		keys.forEach(key => titleLookup.set(key, title));
+	});
+
+	return titleLookup;
+}
+
+function flattenTocItems(items: EpubTocItem[]): EpubTocItem[] {
+	const flattened: EpubTocItem[] = [];
+
+	for (const item of items) {
+		flattened.push(item);
+		const children = item.children || item.subitems || [];
+		if (children.length > 0) {
+			flattened.push(...flattenTocItems(children));
+		}
+	}
+
+	return flattened;
+}
+
+function getTocKeys(item: EpubTocItem): string[] {
+	const keys = [item.id, item.href, item.href?.split('#')[0]]
+		.filter((key): key is string => Boolean(key));
+
+	return Array.from(new Set(keys));
+}
+
+function getChapterTitle(chapter: EpubFlowChapter, titleLookup: Map<string, string>, index: number): string {
+	const keys = [chapter.id, chapter.href, chapter.href?.split('#')[0]]
+		.filter((key): key is string => Boolean(key));
+
+	for (const key of keys) {
+		const title = titleLookup.get(key);
+		if (title) {
+			return title;
+		}
+	}
+
+	return normalizeChapterTitle(chapter.title) || `章节 ${index + 1}`;
+}
+
+function normalizeChapterTitle(title: string | undefined): string {
+	return (title || '').replace(/\s+/g, ' ').trim();
+}
+
+function getSourceLength(lines: string[]): number {
+	return lines.reduce((total, line) => total + line.trim().length, 0);
+}
+
+function buildChapterPositions(chapters: ChapterDraft[], processedLength: number): ChapterInfo[] {
+	if (processedLength <= 0) {
+		return [];
+	}
+
+	const lineLength = vscode.workspace.getConfiguration('zloveread').get('lineLength', 15);
+
+	return chapters.map(chapter => ({
+		id: chapter.id,
+		label: chapter.label,
+		position: clampPosition(Math.floor(chapter.sourceOffset / lineLength), processedLength),
+		level: chapter.level
+	}));
+}
+
+function clampPosition(position: number, processedLength: number): number {
+	if (processedLength <= 0) {
+		return 0;
+	}
+
+	return Math.min(Math.max(position, 0), processedLength - 1);
+}
+
+function formatChapterProgress(position: number, processedLength: number): string {
+	if (processedLength <= 0) {
+		return '0%';
+	}
+
+	const progress = Math.floor((clampPosition(position, processedLength) + 1) / processedLength * 100);
+	return `${progress}%`;
 }

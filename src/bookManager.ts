@@ -158,6 +158,7 @@ export class BookManager {
 						<label>当前阅读:</label>
 						<input type="text" value="${currentBook || '未选择'}" readonly>
 						<button onclick="selectBook()">选择书籍</button>
+						<button onclick="showToc()">章节目录</button>
 					</div>
 					<div class="config-item">
 						<label>每行字数:</label>
@@ -210,6 +211,10 @@ export class BookManager {
 
 					function selectBook() {
 						vscode.postMessage({ command: 'selectBook' });
+					}
+
+					function showToc() {
+						vscode.postMessage({ command: 'showToc' });
 					}
 
 					function saveLineLength(value) {
@@ -378,6 +383,9 @@ export class BookManager {
 						await vscode.commands.executeCommand('zloveread.selectBook');
 						panel.webview.html = this.getWebviewContent();
 						break;
+					case 'showToc':
+						await vscode.commands.executeCommand('zloveread.showToc');
+						break;
 					case 'saveLineLength':
 						await vscode.workspace.getConfiguration('zloveread').update('lineLength', message.length, true);
 						await vscode.commands.executeCommand('zloveread.reloadContent');
@@ -438,4 +446,4 @@ export class BookManager {
 			}
 		});
 	}
-} 
+}

@@ -43,6 +43,10 @@
         "title": "上一行"
       },
       {
+        "command": "zloveread.showToc",
+        "title": "显示章节目录"
+      },
+      {
         "command": "zloveread.setBookPath",
         "title": "设置电子书目录"
       },
