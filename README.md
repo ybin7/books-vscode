@@ -1,4 +1,4 @@
-# zLoveRead - VSCode 电子书阅读插件
+# Quiet Reader - VSCode 电子书阅读插件
 
 在 VSCode 中优雅地阅读电子书，支持 TXT 和 EPUB 格式。
 

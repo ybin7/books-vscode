@@ -1,6 +1,6 @@
 {
-  "name": "z-love-read-vscode",
-  "displayName": "z-love-read-vscode",
+  "name": "quiet-reader",
+  "displayName": "Quiet Reader",
   "description": "VSCode 电子书阅读插件，支持 TXT 和 EPUB 格式，提供舒适的阅读体验,极致的摸鱼体验。",
   "icon": "icon.png",
   "publisher": "whyisee",
@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/whyisee/z-love-read-vscode"
+    "url": "https://github.com/whyisee/quiet-reader"
   },
   "keywords": [
     "ebook",
@@ -90,7 +90,7 @@
       }
     ],
     "configuration": {
-      "title": "Z Love Read",
+      "title": "Quiet Reader",
       "properties": {
         "zloveread.currentBook": {
           "type": "string",
